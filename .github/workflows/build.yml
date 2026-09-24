@@ -1,22 +1,52 @@
-name: Build IPA
-on: [push, workflow_dispatch]
-jobs:
-  build:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - run: brew install xcodegen
-      - run: xcodegen generate
-      - run: |
-          xcodebuild archive -project MediaVault.xcodeproj -scheme MediaVault \
-          -configuration Release -destination 'generic/platform=iOS' \
-          -archivePath ./build/MediaVault.xcarchive \
-          CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-      - run: |
-          mkdir -p ./build/Payload
-          cp -r ./build/MediaVault.xcarchive/Products/Applications/MediaVault.app ./build/Payload/
-          cd ./build && zip -r MediaVault-unsigned.ipa Payload
-      - uses: actions/upload-artifact@v4
-        with:
-          name: MediaVault-IPA
-          path: ./build/MediaVault-unsigned.ipa
+- name: Build and Archive
+  run: |
+    xcodegen generate
+    xcodebuild archive \
+      -project MediaVault.xcodeproj \
+      -scheme MediaVault \
+      -configuration Release \
+      -destination 'generic/platform=iOS' \
+      -archivePath ./build/MediaVault.xcarchive \
+      CODE_SIGN_IDENTITY="" \
+      CODE_SIGNING_REQUIRED=NO \
+      CODE_SIGNING_ALLOWED=NO
+
+- name: Verify Archive
+  run: |
+    set -e
+    APP_PATH="build/MediaVault.xcarchive/Products/Applications/MediaVault.app"
+    echo "=== App 目录 ==="
+    ls -la "$APP_PATH"
+    echo "=== App 大小 ==="
+    du -sh "$APP_PATH"
+    echo "=== Frameworks ==="
+    ls -la "$APP_PATH/Frameworks" || true
+    echo "=== 可执行文件 ==="
+    file "$APP_PATH/MediaVault"
+    # 如果可执行文件不存在或大小异常，立即失败
+    test -f "$APP_PATH/MediaVault" || { echo "❌ 可执行文件不存在"; exit 1; }
+    SIZE=$(stat -f%z "$APP_PATH/MediaVault" 2>/dev/null || stat -c%s "$APP_PATH/MediaVault")
+    echo "可执行文件大小: $SIZE bytes"
+    if [ "$SIZE" -lt 100000 ]; then
+      echo "❌ 可执行文件太小，archive 有问题"
+      exit 1
+    fi
+
+- name: Package IPA
+  run: |
+    set -e
+    APP_PATH="build/MediaVault.xcarchive/Products/Applications/MediaVault.app"
+    rm -rf Payload MediaVault.ipa
+    mkdir -p Payload
+    cp -R "$APP_PATH" Payload/
+    zip -qry MediaVault.ipa Payload
+    echo "=== IPA 大小 ==="
+    ls -lh MediaVault.ipa
+    echo "=== IPA 内容 ==="
+    unzip -l MediaVault.ipa | head -50
+
+- name: Upload IPA
+  uses: actions/upload-artifact@v4
+  with:
+    name: MediaVault-IPA
+    path: MediaVault.ipa
