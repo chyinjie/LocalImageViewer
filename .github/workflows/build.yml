@@ -26,9 +26,7 @@ jobs:
           mkdir -p "$ICON_DIR"
 
           cat > Resources/Assets.xcassets/Contents.json << 'EOF'
-          {
-            "info" : { "author" : "xcode", "version" : 1 }
-          }
+          { "info" : { "author" : "xcode", "version" : 1 } }
           EOF
 
           cat > "$ICON_DIR/Contents.json" << 'EOF'
@@ -66,9 +64,39 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath ./build/MediaVault.xcarchive \
-            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=YES
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Manually Embed AMSMB2.framework
+        run: |
+          set -e
+          APP_PATH="build/MediaVault.xcarchive/Products/Applications/MediaVault.app"
+
+          echo "===== 在 DerivedData 中搜索 AMSMB2.framework ====="
+          FW_SRC=$(find ~/Library/Developer/Xcode/DerivedData -name "AMSMB2.framework" -type d 2>/dev/null | head -1)
+
+          if [ -z "$FW_SRC" ]; then
+            echo "❌ 找不到 AMSMB2.framework"
+            find ~/Library/Developer/Xcode/DerivedData -name "*.framework" -type d 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "找到: $FW_SRC"
+          ls -la "$FW_SRC"
+
+          echo ""
+          echo "===== 复制到 .app/Frameworks/ ====="
+          mkdir -p "$APP_PATH/Frameworks"
+          cp -R "$FW_SRC" "$APP_PATH/Frameworks/"
+          ls -la "$APP_PATH/Frameworks"
+
+          echo ""
+          echo "===== 验证主二进制里的 rpath ====="
+          otool -l "$APP_PATH/MediaVault" | grep -A2 LC_RPATH || true
+
+          echo ""
+          echo "===== 验证主二进制是否引用 AMSMB2 ====="
+          otool -L "$APP_PATH/MediaVault" | grep -i amsmb2 || echo "(未直接引用，可能通过 @rpath)"
 
       - name: Verify Archive Contents
         run: |
@@ -77,30 +105,14 @@ jobs:
 
           echo "===== .app 内容 ====="
           ls -la "$APP_PATH"
-
           echo ""
           echo "===== .app 总大小 ====="
           du -sh "$APP_PATH"
 
           echo ""
-          echo "===== Frameworks 检查（关键） ====="
-          if [ ! -d "$APP_PATH/Frameworks" ]; then
-            echo "❌ 没有 Frameworks 目录！"
-            exit 1
-          fi
-          ls -la "$APP_PATH/Frameworks"
-
-          if [ ! -d "$APP_PATH/Frameworks/AMSMB2.framework" ]; then
-            echo "❌ Frameworks 里没有 AMSMB2.framework"
-            exit 1
-          fi
+          echo "===== Frameworks 检查 ====="
+          test -d "$APP_PATH/Frameworks/AMSMB2.framework" || { echo "❌ AMSMB2.framework 未嵌入"; exit 1; }
           echo "✅ AMSMB2.framework 已嵌入"
-
-          echo ""
-          echo "===== 主二进制 ====="
-          file "$APP_PATH/MediaVault"
-          EXEC_SIZE=$(stat -f%z "$APP_PATH/MediaVault")
-          echo "可执行文件大小: $EXEC_SIZE bytes"
 
       - name: Package IPA
         run: |
@@ -109,21 +121,19 @@ jobs:
 
           rm -rf Payload
           rm -f MediaVault.ipa
-
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           zip -qry MediaVault.ipa Payload
 
           echo "===== IPA 大小 ====="
           ls -lh MediaVault.ipa
-
           echo ""
           echo "===== IPA 内容 ====="
           unzip -l MediaVault.ipa | head -80
 
           IPA_SIZE=$(stat -f%z MediaVault.ipa)
           if [ "$IPA_SIZE" -lt 1000000 ]; then
-            echo "❌ IPA 小于 1 MB，打包异常"
+            echo "❌ IPA 小于 1 MB"
             exit 1
           fi
           echo "✅ IPA 打包成功"
