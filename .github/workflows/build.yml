@@ -132,11 +132,11 @@ jobs:
           unzip -l MediaVault.ipa | head -80
 
           IPA_SIZE=$(stat -f%z MediaVault.ipa)
-          if [ "$IPA_SIZE" -lt 1000000 ]; then
-            echo "❌ IPA 小于 1 MB"
+          if [ "$IPA_SIZE" -lt 200000 ]; then
+            echo "❌ IPA 小于 200 KB，异常（预期 ~300 KB）"
             exit 1
           fi
-          echo "✅ IPA 打包成功"
+          echo "✅ IPA 打包成功（${IPA_SIZE} 字节）"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
