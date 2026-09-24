@@ -57,14 +57,26 @@ struct SMBLoginView: View {
     private func connect() {
         isLoading = true
         errorMessage = nil
-        let url = URL(string: "smb://\(host)")!
+
+        guard let url = URL(string: "smb://\(host)") else {
+            isLoading = false
+            errorMessage = "服务器地址无效"
+            return
+        }
         let credential = URLCredential(user: username, password: password, persistence: .forSession)
-        let client = SMB2Manager(url: url, credential: credential)
+
+        // ✅ SMB2Manager 的初始化器返回可选类型，必须解包
+        guard let client = SMB2Manager(url: url, credential: credential) else {
+            isLoading = false
+            errorMessage = "无法创建 SMB 客户端，请检查地址格式"
+            return
+        }
+
         connectedClient = client
 
         Task {
             do {
-                // 不再调用私有的 connect()，改用 listShares / contentsOfDirectory 隐式验证连通
+                // 用 listShares / contentsOfDirectory 隐式验证连通性
                 do {
                     _ = try await client.listShares()
                 } catch {
