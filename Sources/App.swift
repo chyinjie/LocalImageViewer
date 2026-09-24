@@ -6,7 +6,9 @@ import AMSMB2
 @main
 struct MediaVaultApp: App {
     var body: some Scene {
-        WindowGroup { SMBLoginView() }
+        WindowGroup {
+            SMBLoginView()
+        }
     }
 }
 
@@ -80,8 +82,8 @@ struct SMBFileBrowserView: View {
     let path: String
     @State private var files: [SMB2File] = []
     @State private var isLoading = true
-    @State private var selectedImageURL: URL?
-    @State private var selectedVideoURL: URL?
+    @State private var selectedMediaURL: URL?
+    @State private var isVideo = false
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
@@ -108,11 +110,12 @@ struct SMBFileBrowserView: View {
         }
         .navigationTitle(path == "/" ? "共享根目录" : (path as NSString).lastPathComponent)
         .onAppear(perform: loadFiles)
-        .fullScreenCover(item: $selectedImageURL) { url in
-            ImagePreview(url: url)
-        }
-        .fullScreenCover(item: $selectedVideoURL) { url in
-            SMBVideoPlayer(url: url)
+        .fullScreenCover(item: $selectedMediaURL) { url in
+            if isVideo {
+                SMBVideoPlayer(url: url)
+            } else {
+                ImagePreview(url: url)
+            }
         }
     }
     
@@ -142,11 +145,8 @@ struct SMBFileBrowserView: View {
                 try client.downloadItem(atPath: fullPath, to: tempURL) { _, _ in }
                 DispatchQueue.main.async {
                     isLoading = false
-                    if isVideo(file.name) {
-                        selectedVideoURL = tempURL
-                    } else {
-                        selectedImageURL = tempURL
-                    }
+                    isVideo = isVideo(file.name)
+                    selectedMediaURL = tempURL
                 }
             } catch {
                 DispatchQueue.main.async { isLoading = false }
@@ -155,7 +155,7 @@ struct SMBFileBrowserView: View {
     }
 }
 
-// MARK: - 辅助视图 (图片和视频播放)
+// MARK: - 图片查看器
 struct ImagePreview: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
@@ -170,6 +170,7 @@ struct ImagePreview: View {
     }
 }
 
+// MARK: - 视频播放器
 struct SMBVideoPlayer: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
@@ -184,7 +185,7 @@ struct SMBVideoPlayer: View {
     }
 }
 
-// 让 URL 支持 Identifiable 用于 fullScreenCover
+// 让 URL 支持 Identifiable，用于全屏弹窗
 extension URL: Identifiable {
     public var id: String { absoluteString }
 }
