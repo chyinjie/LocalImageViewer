@@ -65,7 +65,6 @@ struct SMBLoginView: View {
         }
         let credential = URLCredential(user: username, password: password, persistence: .forSession)
 
-        // 主线程初始化（SMB2Manager init 可能涉及网络栈，不能脱离主 actor）
         guard let client = SMB2Manager(url: url, credential: credential) else {
             isLoading = false
             errorMessage = "无法创建 SMB 客户端，请检查地址格式"
