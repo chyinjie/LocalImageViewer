@@ -1,4 +1,25 @@
-- name: Ensure App Icon Exists
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Ensure App Icon Exists
         run: |
           ICON_PATH="Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
           if [ ! -f "$ICON_PATH" ]; then
@@ -20,3 +41,78 @@ open('$ICON_PATH', 'wb').write(header + ihdr + idat + iend)
 "
           fi
           ls -la "$ICON_PATH"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build and Archive
+        run: |
+          set -e
+          xcodebuild archive \
+            -project MediaVault.xcodeproj \
+            -scheme MediaVault \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath ./build/MediaVault.xcarchive \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES
+
+      - name: Verify Archive Contents
+        run: |
+          set -e
+          APP_PATH="build/MediaVault.xcarchive/Products/Applications/MediaVault.app"
+
+          echo "===== .app 内容 ====="
+          ls -la "$APP_PATH"
+
+          echo ""
+          echo "===== .app 总大小 ====="
+          du -sh "$APP_PATH"
+
+          echo ""
+          echo "===== Frameworks 检查（关键） ====="
+          if [ ! -d "$APP_PATH/Frameworks" ]; then
+            echo "❌ 没有 Frameworks 目录！"
+            exit 1
+          fi
+          ls -la "$APP_PATH/Frameworks"
+
+          echo ""
+          echo "===== 主二进制 ====="
+          file "$APP_PATH/MediaVault"
+          EXEC_SIZE=$(stat -f%z "$APP_PATH/MediaVault")
+          echo "可执行文件大小: $EXEC_SIZE bytes"
+
+      - name: Package IPA
+        run: |
+          set -e
+          APP_PATH="build/MediaVault.xcarchive/Products/Applications/MediaVault.app"
+
+          rm -rf Payload
+          rm -f MediaVault.ipa
+
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry MediaVault.ipa Payload
+
+          echo "===== IPA 大小 ====="
+          ls -lh MediaVault.ipa
+
+          echo ""
+          echo "===== IPA 内容 ====="
+          unzip -l MediaVault.ipa | head -80
+
+          IPA_SIZE=$(stat -f%z MediaVault.ipa)
+          if [ "$IPA_SIZE" -lt 1000000 ]; then
+            echo "❌ IPA 小于 1 MB，打包异常"
+            exit 1
+          fi
+          echo "✅ IPA 打包成功"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaVault-IPA
+          path: MediaVault.ipa
+          if-no-files-found: error
