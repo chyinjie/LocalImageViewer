@@ -6,7 +6,7 @@ options:
 packages:
   AMSMB2:
     url: https://github.com/amosavian/AMSMB2
-    branch: main
+    branch: master
 targets:
   MediaVault:
     type: application
