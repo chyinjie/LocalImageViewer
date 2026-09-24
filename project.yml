@@ -6,7 +6,7 @@ options:
 packages:
   AMSMB2:
     url: https://github.com/amosavian/AMSMB2
-    from: 3.0.0
+    branch: main
 targets:
   MediaVault:
     type: application
@@ -21,4 +21,5 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: 5.0
     scheme: {}
