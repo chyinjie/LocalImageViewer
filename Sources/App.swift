@@ -1,87 +1,176 @@
 import SwiftUI
 import AVKit
 import UniformTypeIdentifiers
+import AMSMB2
 
 @main
 struct MediaVaultApp: App {
     var body: some Scene {
-        WindowGroup { FileBrowserView() }
+        WindowGroup { SMBLoginView() }
     }
 }
 
-struct FileBrowserView: View {
-    @State private var files: [FileItem] = []
-    @State private var selectedImage: FileItem?
-    @State private var selectedVideo: FileItem?
-    @State private var showPicker = false
-
+// MARK: - SMB 登录界面
+struct SMBLoginView: View {
+    @State private var host = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var connectedClient: SMB2Manager?
+    @State private var showBrowser = false
+    
     var body: some View {
         NavigationStack {
-            Group {
-                if files.isEmpty {
-                    VStack(spacing: 20) {
-                        Image(systemName: "folder.badge.questionmark").font(.system(size: 60)).foregroundStyle(.secondary)
-                        Text("请选择文件夹").font(.headline)
-                        Button("选择文件夹") { showPicker = true }.buttonStyle(.borderedProminent)
+            Form {
+                Section(header: Text("服务器地址 (例如 192.168.1.100)")) {
+                    TextField("IP 或主机名", text: $host)
+                        .keyboardType(.URL)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                }
+                Section(header: Text("认证信息")) {
+                    TextField("用户名", text: $username)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                    SecureField("密码", text: $password)
+                }
+                if let error = errorMessage {
+                    Section { Text(error).foregroundColor(.red) }
+                }
+                Button(action: connect) {
+                    if isLoading { ProgressView() } else { Text("连接") }
+                }
+                .disabled(host.isEmpty || username.isEmpty || password.isEmpty || isLoading)
+            }
+            .navigationTitle("连接局域网共享")
+            .navigationDestination(isPresented: $showBrowser) {
+                if let client = connectedClient {
+                    SMBFileBrowserView(client: client, path: "/")
+                }
+            }
+        }
+    }
+    
+    private func connect() {
+        isLoading = true
+        errorMessage = nil
+        let url = URL(string: "smb://\(host)")!
+        let client = SMB2Manager(url: url, user: username, password: password)
+        connectedClient = client
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            client.connect { error in
+                DispatchQueue.main.async {
+                    isLoading = false
+                    if let error = error {
+                        errorMessage = "连接失败: \(error.localizedDescription)"
+                    } else {
+                        showBrowser = true
                     }
-                } else {
-                    List(files) { item in
+                }
+            }
+        }
+    }
+}
+
+// MARK: - SMB 文件浏览界面
+struct SMBFileBrowserView: View {
+    let client: SMB2Manager
+    let path: String
+    @State private var files: [SMB2File] = []
+    @State private var isLoading = true
+    @State private var selectedImageURL: URL?
+    @State private var selectedVideoURL: URL?
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        Group {
+            if isLoading {
+                ProgressView("正在读取...")
+            } else if files.isEmpty {
+                VStack { Text("此文件夹为空") }
+            } else {
+                List(files) { file in
+                    if file.isDirectory {
+                        NavigationLink(destination: SMBFileBrowserView(client: client, path: "\(path)/\(file.name)")) {
+                            Label(file.name, systemImage: "folder")
+                        }
+                    } else {
                         Button {
-                            if item.isImage { selectedImage = item }
-                            else if item.isVideo { selectedVideo = item }
+                            downloadAndOpen(file: file)
                         } label: {
-                            HStack { Image(systemName: item.icon); Text(item.name) }
+                            Label(file.name, systemImage: isVideo(file.name) ? "film" : "photo")
                         }
                     }
                 }
             }
-            .navigationTitle("媒体浏览器")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("选文件夹") { showPicker = true }
-                }
-            }
         }
-        .fileImporter(isPresented: $showPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                loadFolder(url: url)
-            }
+        .navigationTitle(path == "/" ? "共享根目录" : (path as NSString).lastPathComponent)
+        .onAppear(perform: loadFiles)
+        .fullScreenCover(item: $selectedImageURL) { url in
+            ImagePreview(url: url)
         }
-        .fullScreenCover(item: $selectedImage) { item in
-            if let img = UIImage(contentsOfFile: item.url.path) {
-                ImageViewerView(image: img)
-            }
-        }
-        .fullScreenCover(item: $selectedVideo) { item in
-            VideoPlayerView(url: item.url)
+        .fullScreenCover(item: $selectedVideoURL) { url in
+            SMBVideoPlayer(url: url)
         }
     }
-
-    private func loadFolder(url: URL) {
-        _ = url.startAccessingSecurityScopedResource()
-        if let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles) {
-            files = contents.compactMap { fileURL in
-                let isDir = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                return FileItem(url: fileURL, isDirectory: isDir)
-            }.filter { $0.isImage || $0.isVideo }
-             .sorted { $0.name < $1.name }
+    
+    private func loadFiles() {
+        isLoading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let smbFiles = (try? client.contentsOfDirectory(atPath: path)) ?? []
+            DispatchQueue.main.async {
+                self.files = smbFiles.filter { !$0.name.hasPrefix(".") }
+                self.isLoading = false
+            }
+        }
+    }
+    
+    private func isVideo(_ name: String) -> Bool {
+        let ext = (name as NSString).pathExtension.lowercased()
+        return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
+    }
+    
+    private func downloadAndOpen(file: SMB2File) {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(file.name)
+        let fullPath = "\(path)/\(file.name)"
+        isLoading = true
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try client.downloadItem(atPath: fullPath, to: tempURL) { _, _ in }
+                DispatchQueue.main.async {
+                    isLoading = false
+                    if isVideo(file.name) {
+                        selectedVideoURL = tempURL
+                    } else {
+                        selectedImageURL = tempURL
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { isLoading = false }
+            }
         }
     }
 }
 
-struct ImageViewerView: View {
-    let image: UIImage
+// MARK: - 辅助视图 (图片和视频播放)
+struct ImagePreview: View {
+    let url: URL
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            Image(uiImage: image).resizable().scaledToFit()
+            if let img = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: img).resizable().scaledToFit()
+            }
             VStack { HStack { Button { dismiss() } label: { Image(systemName: "xmark").foregroundStyle(.white).padding() }; Spacer() }; Spacer() }.padding()
         }
     }
 }
 
-struct VideoPlayerView: View {
+struct SMBVideoPlayer: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
@@ -95,12 +184,7 @@ struct VideoPlayerView: View {
     }
 }
 
-struct FileItem: Identifiable {
-    let id = UUID()
-    let url: URL
-    let isDirectory: Bool
-    var name: String { url.lastPathComponent }
-    var isImage: Bool { let type = UTType(filenameExtension: url.pathExtension); return type?.conforms(to: .image) ?? false }
-    var isVideo: Bool { let type = UTType(filenameExtension: url.pathExtension); return type?.conforms(to: .movie) ?? false }
-    var icon: String { isImage ? "photo" : "film" }
+// 让 URL 支持 Identifiable 用于 fullScreenCover
+extension URL: Identifiable {
+    public var id: String { absoluteString }
 }
