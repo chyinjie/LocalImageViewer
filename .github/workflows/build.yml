@@ -19,28 +19,40 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Ensure App Icon Exists
+      - name: Prepare App Icon Assets
         run: |
-          ICON_PATH="Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
-          if [ ! -f "$ICON_PATH" ]; then
-            echo "图标不存在，生成占位图标..."
-            mkdir -p "$(dirname "$ICON_PATH")"
-            python3 -c "
-import zlib, struct
-def chunk(t, d):
-    c = t + d
-    return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-header = b'\x89PNG\r\n\x1a\n'
-ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', 1024, 1024, 8, 2, 0, 0, 0))
-raw = b''
-for y in range(1024):
-    raw += b'\x00' + bytes([10, 132, 255]) * 1024
-idat = chunk(b'IDAT', zlib.compress(raw, 9))
-iend = chunk(b'IEND', b'')
-open('$ICON_PATH', 'wb').write(header + ihdr + idat + iend)
-"
+          set -e
+          ICON_DIR="Resources/Assets.xcassets/AppIcon.appiconset"
+          mkdir -p "$ICON_DIR"
+
+          cat > Resources/Assets.xcassets/Contents.json << 'EOF'
+          {
+            "info" : { "author" : "xcode", "version" : 1 }
+          }
+          EOF
+
+          cat > "$ICON_DIR/Contents.json" << 'EOF'
+          {
+            "images" : [
+              {
+                "filename" : "icon-1024.png",
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024"
+              }
+            ],
+            "info" : { "author" : "xcode", "version" : 1 }
+          }
+          EOF
+
+          if [ ! -f "$ICON_DIR/icon-1024.png" ]; then
+            echo "生成占位图标..."
+            python3 -c 'import zlib,struct;h=b"\x89PNG\r\n\x1a\n";c=lambda t,d:struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff);i=c(b"IHDR",struct.pack(">IIBBBBB",1024,1024,8,2,0,0,0));r=b"".join(b"\x00"+bytes([10,132,255])*1024 for _ in range(1024));d=c(b"IDAT",zlib.compress(r,9));e=c(b"IEND",b"");open("Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png","wb").write(h+i+d+e)'
           fi
-          ls -la "$ICON_PATH"
+
+          echo "===== 资源目录 ====="
+          find Resources -type f
+          ls -la "$ICON_DIR/icon-1024.png"
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -77,6 +89,12 @@ open('$ICON_PATH', 'wb').write(header + ihdr + idat + iend)
             exit 1
           fi
           ls -la "$APP_PATH/Frameworks"
+
+          if [ ! -d "$APP_PATH/Frameworks/AMSMB2.framework" ]; then
+            echo "❌ Frameworks 里没有 AMSMB2.framework"
+            exit 1
+          fi
+          echo "✅ AMSMB2.framework 已嵌入"
 
           echo ""
           echo "===== 主二进制 ====="
