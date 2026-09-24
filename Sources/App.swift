@@ -21,7 +21,7 @@ struct SMBLoginView: View {
     @State private var errorMessage: String?
     @State private var connectedClient: SMB2Manager?
     @State private var showBrowser = false
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -53,7 +53,7 @@ struct SMBLoginView: View {
             }
         }
     }
-    
+
     private func connect() {
         isLoading = true
         errorMessage = nil
@@ -61,11 +61,15 @@ struct SMBLoginView: View {
         let credential = URLCredential(user: username, password: password, persistence: .forSession)
         let client = SMB2Manager(url: url, credential: credential)
         connectedClient = client
-        
-        // 关键修改：用 Task 代替 DispatchQueue.global().async
+
         Task {
             do {
-                try await client.connect()
+                // 不再调用私有的 connect()，改用 listShares / contentsOfDirectory 隐式验证连通
+                do {
+                    _ = try await client.listShares()
+                } catch {
+                    _ = try await client.contentsOfDirectory(atPath: "/")
+                }
                 await MainActor.run {
                     isLoading = false
                     showBrowser = true
@@ -89,7 +93,7 @@ struct SMBFileBrowserView: View {
     @State private var selectedMediaURL: URL?
     @State private var isVideo = false
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         Group {
             if isLoading {
@@ -101,7 +105,7 @@ struct SMBFileBrowserView: View {
                     let file = files[index]
                     let name = (file as AnyObject).value(forKey: "name") as? String ?? "未知文件"
                     let isDir = (file as AnyObject).value(forKey: "isDirectory") as? Bool ?? false
-                    
+
                     if isDir {
                         NavigationLink(destination: SMBFileBrowserView(client: client, path: "\(path)/\(name)")) {
                             Label(name, systemImage: "folder")
@@ -126,12 +130,11 @@ struct SMBFileBrowserView: View {
             }
         }
     }
-    
+
     private func loadFiles() {
         isLoading = true
         Task {
             do {
-                // 关键修改：用 await 调用 async 方法
                 let smbFiles = try await client.contentsOfDirectory(atPath: path)
                 let filtered = smbFiles.filter { !(($0.name ?? "").hasPrefix(".")) }
                 await MainActor.run {
@@ -143,21 +146,20 @@ struct SMBFileBrowserView: View {
             }
         }
     }
-    
+
     private func isVideo(_ name: String) -> Bool {
         let ext = (name as NSString).pathExtension.lowercased()
         return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
     }
-    
+
     private func downloadAndOpen(name: String) {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         let fullPath = "\(path)/\(name)"
         isLoading = true
-        
+
         Task {
             do {
-                // 关键修改：用 await 调用 async 下载方法
-                try await client.downloadItem(atPath: fullPath, to: tempURL)
+                try await client.downloadItem(atPath: fullPath, to: tempURL, progress: { _, _ in return true })
                 await MainActor.run {
                     isLoading = false
                     isVideo = isVideo(name)
@@ -201,7 +203,6 @@ struct SMBVideoPlayer: View {
 }
 
 // 让 URL 支持 Identifiable，用于全屏弹窗
-// 修复警告：加 @retroactive
 extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
 }
