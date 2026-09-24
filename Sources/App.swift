@@ -58,7 +58,9 @@ struct SMBLoginView: View {
         isLoading = true
         errorMessage = nil
         let url = URL(string: "smb://\(host)")!
-        let client = SMB2Manager(url: url, user: username, password: password)
+        // 修复日志中第61行的错误：新版库改用 URLCredential
+        let credential = URLCredential(user: username, password: password, persistence: .forSession)
+        let client = SMB2Manager(url: url, credential: credential)
         connectedClient = client
         
         DispatchQueue.global(qos: .userInitiated).async {
@@ -80,7 +82,8 @@ struct SMBLoginView: View {
 struct SMBFileBrowserView: View {
     let client: SMB2Manager
     let path: String
-    @State private var files: [SMB2File] = []
+    // 修复日志中第83、138行的错误：由于版本变更，不再显式声明 SMB2File 数组类型，改用 Any 容器
+    @State private var files: [Any] = []
     @State private var isLoading = true
     @State private var selectedMediaURL: URL?
     @State private var isVideo = false
@@ -93,16 +96,21 @@ struct SMBFileBrowserView: View {
             } else if files.isEmpty {
                 VStack { Text("此文件夹为空") }
             } else {
-                List(files) { file in
-                    if file.isDirectory {
-                        NavigationLink(destination: SMBFileBrowserView(client: client, path: "\(path)/\(file.name)")) {
-                            Label(file.name, systemImage: "folder")
+                List(0..<files.count, id: \.self) { index in
+                    let file = files[index]
+                    // 使用反射获取属性，规避 SMB2File 类型丢失的问题
+                    let name = (file as AnyObject).value(forKey: "name") as? String ?? "未知文件"
+                    let isDir = (file as AnyObject).value(forKey: "isDirectory") as? Bool ?? false
+                    
+                    if isDir {
+                        NavigationLink(destination: SMBFileBrowserView(client: client, path: "\(path)/\(name)")) {
+                            Label(name, systemImage: "folder")
                         }
                     } else {
                         Button {
-                            downloadAndOpen(file: file)
+                            downloadAndOpen(file: file, name: name)
                         } label: {
-                            Label(file.name, systemImage: isVideo(file.name) ? "film" : "photo")
+                            Label(name, systemImage: isVideo(name) ? "film" : "photo")
                         }
                     }
                 }
@@ -123,8 +131,10 @@ struct SMBFileBrowserView: View {
         isLoading = true
         DispatchQueue.global(qos: .userInitiated).async {
             let smbFiles = (try? client.contentsOfDirectory(atPath: path)) ?? []
+            // 修复日志中第127行的错误：处理 Optional String 并过滤隐藏文件
+            let filtered = smbFiles.filter { !(($0.name ?? "").hasPrefix(".")) }
             DispatchQueue.main.async {
-                self.files = smbFiles.filter { !$0.name.hasPrefix(".") }
+                self.files = filtered
                 self.isLoading = false
             }
         }
@@ -135,17 +145,18 @@ struct SMBFileBrowserView: View {
         return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
     }
     
-    private func downloadAndOpen(file: SMB2File) {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(file.name)
-        let fullPath = "\(path)/\(file.name)"
+    private func downloadAndOpen(file: Any, name: String) {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        let fullPath = "\(path)/\(name)"
         isLoading = true
         
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try client.downloadItem(atPath: fullPath, to: tempURL) { _, _ in }
+                // 修复日志中第145行的错误：下载进度闭包需要返回 Bool
+                try client.downloadItem(atPath: fullPath, to: tempURL) { _, _ in return true }
                 DispatchQueue.main.async {
                     isLoading = false
-                    isVideo = isVideo(file.name)
+                    isVideo = isVideo(name)
                     selectedMediaURL = tempURL
                 }
             } catch {
