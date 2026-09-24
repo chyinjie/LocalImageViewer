@@ -65,18 +65,25 @@ struct SMBLoginView: View {
         }
         let credential = URLCredential(user: username, password: password, persistence: .forSession)
 
-        // ✅ SMB2Manager 的初始化器返回可选类型，必须解包
-        guard let client = SMB2Manager(url: url, credential: credential) else {
-            isLoading = false
-            errorMessage = "无法创建 SMB 客户端，请检查地址格式"
-            return
-        }
-
-        connectedClient = client
-
         Task {
+            // 在后台线程初始化 SMB2Manager，避免阻塞主线程
+            let client: SMB2Manager? = await Task.detached(priority: .userInitiated) {
+                SMB2Manager(url: url, credential: credential)
+            }.value
+
+            guard let client else {
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "无法创建 SMB 客户端，请检查地址格式"
+                }
+                return
+            }
+
+            await MainActor.run {
+                connectedClient = client
+            }
+
             do {
-                // 用 listShares / contentsOfDirectory 隐式验证连通性
                 do {
                     _ = try await client.listShares()
                 } catch {
@@ -96,14 +103,20 @@ struct SMBLoginView: View {
     }
 }
 
+// MARK: - 媒体项包装类型（替代 URL 的 Identifiable 扩展）
+struct MediaItem: Identifiable {
+    let id = UUID()
+    let url: URL
+    let isVideo: Bool
+}
+
 // MARK: - SMB 文件浏览界面
 struct SMBFileBrowserView: View {
     let client: SMB2Manager
     let path: String
     @State private var files: [Any] = []
     @State private var isLoading = true
-    @State private var selectedMediaURL: URL?
-    @State private var isVideo = false
+    @State private var selectedMedia: MediaItem?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -126,7 +139,7 @@ struct SMBFileBrowserView: View {
                         Button {
                             downloadAndOpen(name: name)
                         } label: {
-                            Label(name, systemImage: isVideo(name) ? "film" : "photo")
+                            Label(name, systemImage: isVideoFile(name) ? "film" : "photo")
                         }
                     }
                 }
@@ -134,11 +147,11 @@ struct SMBFileBrowserView: View {
         }
         .navigationTitle(path == "/" ? "共享根目录" : (path as NSString).lastPathComponent)
         .onAppear(perform: loadFiles)
-        .fullScreenCover(item: $selectedMediaURL) { url in
-            if isVideo {
-                SMBVideoPlayer(url: url)
+        .fullScreenCover(item: $selectedMedia) { item in
+            if item.isVideo {
+                SMBVideoPlayer(url: item.url)
             } else {
-                ImagePreview(url: url)
+                ImagePreview(url: item.url)
             }
         }
     }
@@ -159,7 +172,7 @@ struct SMBFileBrowserView: View {
         }
     }
 
-    private func isVideo(_ name: String) -> Bool {
+    private func isVideoFile(_ name: String) -> Bool {
         let ext = (name as NSString).pathExtension.lowercased()
         return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
     }
@@ -174,8 +187,7 @@ struct SMBFileBrowserView: View {
                 try await client.downloadItem(atPath: fullPath, to: tempURL, progress: { _, _ in return true })
                 await MainActor.run {
                     isLoading = false
-                    isVideo = isVideo(name)
-                    selectedMediaURL = tempURL
+                    selectedMedia = MediaItem(url: tempURL, isVideo: isVideoFile(name))
                 }
             } catch {
                 await MainActor.run { isLoading = false }
@@ -194,7 +206,16 @@ struct ImagePreview: View {
             if let img = UIImage(contentsOfFile: url.path) {
                 Image(uiImage: img).resizable().scaledToFit()
             }
-            VStack { HStack { Button { dismiss() } label: { Image(systemName: "xmark").foregroundStyle(.white).padding() }; Spacer() }; Spacer() }.padding()
+            VStack {
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark").foregroundStyle(.white).padding()
+                    }
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding()
         }
     }
 }
@@ -204,17 +225,26 @@ struct SMBVideoPlayer: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if let player { VideoPlayer(player: player).onAppear { player.play() }.onDisappear { player.pause() } }
-            VStack { HStack { Button { dismiss() } label: { Image(systemName: "xmark").foregroundStyle(.white).padding() }; Spacer() }; Spacer() }.padding()
+            if let player {
+                VideoPlayer(player: player)
+                    .onAppear { player.play() }
+                    .onDisappear { player.pause() }
+            }
+            VStack {
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark").foregroundStyle(.white).padding()
+                    }
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding()
         }
         .onAppear { player = AVPlayer(url: url) }
     }
-}
-
-// 让 URL 支持 Identifiable，用于全屏弹窗
-extension URL: @retroactive Identifiable {
-    public var id: String { absoluteString }
 }
