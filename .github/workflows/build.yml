@@ -1,0 +1,22 @@
+name: Build IPA
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - run: |
+          xcodebuild archive -project MediaVault.xcodeproj -scheme MediaVault \
+          -configuration Release -destination 'generic/platform=iOS' \
+          -archivePath ./build/MediaVault.xcarchive \
+          CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+      - run: |
+          mkdir -p ./build/Payload
+          cp -r ./build/MediaVault.xcarchive/Products/Applications/MediaVault.app ./build/Payload/
+          cd ./build && zip -r MediaVault-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaVault-IPA
+          path: ./build/MediaVault-unsigned.ipa
