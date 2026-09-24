@@ -1,116 +1,22 @@
-name: build
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: macos-15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Build and Archive
+- name: Ensure App Icon Exists
         run: |
-          set -e
-          xcodebuild archive \
-            -project MediaVault.xcodeproj \
-            -scheme MediaVault \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -archivePath ./build/MediaVault.xcarchive \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
-
-      # ============================================================
-      # 关键修复：打包前先验证 .app 是否完整
-      # ============================================================
-      - name: Verify Archive Contents
-        run: |
-          set -e
-          APP_PATH="build/MediaVault.xcarchive/Products/Applications/MediaVault.app"
-
-          echo "===== Archive 目录结构 ====="
-          find build/MediaVault.xcarchive -maxdepth 4 -type d
-
-          echo ""
-          echo "===== .app 内容 ====="
-          ls -la "$APP_PATH"
-
-          echo ""
-          echo "===== .app 总大小 ====="
-          du -sh "$APP_PATH"
-
-          echo ""
-          echo "===== 主可执行文件 ====="
-          if [ ! -f "$APP_PATH/MediaVault" ]; then
-            echo "❌ 找不到主可执行文件 MediaVault"
-            exit 1
+          ICON_PATH="Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          if [ ! -f "$ICON_PATH" ]; then
+            echo "图标不存在，生成占位图标..."
+            mkdir -p "$(dirname "$ICON_PATH")"
+            python3 -c "
+import zlib, struct
+def chunk(t, d):
+    c = t + d
+    return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+header = b'\x89PNG\r\n\x1a\n'
+ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', 1024, 1024, 8, 2, 0, 0, 0))
+raw = b''
+for y in range(1024):
+    raw += b'\x00' + bytes([10, 132, 255]) * 1024
+idat = chunk(b'IDAT', zlib.compress(raw, 9))
+iend = chunk(b'IEND', b'')
+open('$ICON_PATH', 'wb').write(header + ihdr + idat + iend)
+"
           fi
-          file "$APP_PATH/MediaVault"
-          EXEC_SIZE=$(stat -f%z "$APP_PATH/MediaVault")
-          echo "可执行文件大小: $EXEC_SIZE bytes"
-          if [ "$EXEC_SIZE" -lt 100000 ]; then
-            echo "❌ 可执行文件过小，archive 异常"
-            exit 1
-          fi
-
-          echo ""
-          echo "===== Frameworks ====="
-          if [ -d "$APP_PATH/Frameworks" ]; then
-            ls -la "$APP_PATH/Frameworks"
-            du -sh "$APP_PATH/Frameworks"
-          else
-            echo "⚠️ 没有 Frameworks 目录"
-          fi
-
-      # ============================================================
-      # 关键修复：正确的 IPA 打包方式
-      # ============================================================
-      - name: Package IPA
-        run: |
-          set -e
-          APP_PATH="build/MediaVault.xcarchive/Products/Applications/MediaVault.app"
-
-          rm -rf Payload
-          rm -f MediaVault.ipa
-
-          mkdir -p Payload
-          cp -R "$APP_PATH" Payload/
-
-          zip -qry MediaVault.ipa Payload
-
-          echo "===== IPA 大小 ====="
-          ls -lh MediaVault.ipa
-
-          echo ""
-          echo "===== IPA 内容（前 60 行） ====="
-          unzip -l MediaVault.ipa | head -60
-
-          # IPA 至少要 1 MB 以上，否则肯定打错了
-          IPA_SIZE=$(stat -f%z MediaVault.ipa)
-          echo "IPA 字节数: $IPA_SIZE"
-          if [ "$IPA_SIZE" -lt 1000000 ]; then
-            echo "❌ IPA 小于 1 MB，打包异常"
-             exit 1
-          fi
-
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: MediaVault-IPA
-          path: MediaVault.ipa
-          if-no-files-found: error
+          ls -la "$ICON_PATH"
