@@ -58,20 +58,22 @@ struct SMBLoginView: View {
         isLoading = true
         errorMessage = nil
         let url = URL(string: "smb://\(host)")!
-        // 修复日志中第61行的错误：新版库改用 URLCredential
         let credential = URLCredential(user: username, password: password, persistence: .forSession)
         let client = SMB2Manager(url: url, credential: credential)
         connectedClient = client
         
-        DispatchQueue.global(qos: .userInitiated).async {
-            client.connect { error in
-                DispatchQueue.main.async {
+        // 关键修改：用 Task 代替 DispatchQueue.global().async
+        Task {
+            do {
+                try await client.connect()
+                await MainActor.run {
                     isLoading = false
-                    if let error = error {
-                        errorMessage = "连接失败: \(error.localizedDescription)"
-                    } else {
-                        showBrowser = true
-                    }
+                    showBrowser = true
+                }
+            } catch {
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "连接失败: \(error.localizedDescription)"
                 }
             }
         }
@@ -82,7 +84,6 @@ struct SMBLoginView: View {
 struct SMBFileBrowserView: View {
     let client: SMB2Manager
     let path: String
-    // 修复日志中第83、138行的错误：由于版本变更，不再显式声明 SMB2File 数组类型，改用 Any 容器
     @State private var files: [Any] = []
     @State private var isLoading = true
     @State private var selectedMediaURL: URL?
@@ -98,7 +99,6 @@ struct SMBFileBrowserView: View {
             } else {
                 List(0..<files.count, id: \.self) { index in
                     let file = files[index]
-                    // 使用反射获取属性，规避 SMB2File 类型丢失的问题
                     let name = (file as AnyObject).value(forKey: "name") as? String ?? "未知文件"
                     let isDir = (file as AnyObject).value(forKey: "isDirectory") as? Bool ?? false
                     
@@ -108,7 +108,7 @@ struct SMBFileBrowserView: View {
                         }
                     } else {
                         Button {
-                            downloadAndOpen(file: file, name: name)
+                            downloadAndOpen(name: name)
                         } label: {
                             Label(name, systemImage: isVideo(name) ? "film" : "photo")
                         }
@@ -129,13 +129,17 @@ struct SMBFileBrowserView: View {
     
     private func loadFiles() {
         isLoading = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let smbFiles = (try? client.contentsOfDirectory(atPath: path)) ?? []
-            // 修复日志中第127行的错误：处理 Optional String 并过滤隐藏文件
-            let filtered = smbFiles.filter { !(($0.name ?? "").hasPrefix(".")) }
-            DispatchQueue.main.async {
-                self.files = filtered
-                self.isLoading = false
+        Task {
+            do {
+                // 关键修改：用 await 调用 async 方法
+                let smbFiles = try await client.contentsOfDirectory(atPath: path)
+                let filtered = smbFiles.filter { !(($0.name ?? "").hasPrefix(".")) }
+                await MainActor.run {
+                    self.files = filtered
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run { self.isLoading = false }
             }
         }
     }
@@ -145,22 +149,22 @@ struct SMBFileBrowserView: View {
         return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
     }
     
-    private func downloadAndOpen(file: Any, name: String) {
+    private func downloadAndOpen(name: String) {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         let fullPath = "\(path)/\(name)"
         isLoading = true
         
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task {
             do {
-                // 修复日志中第145行的错误：下载进度闭包需要返回 Bool
-                try client.downloadItem(atPath: fullPath, to: tempURL) { _, _ in return true }
-                DispatchQueue.main.async {
+                // 关键修改：用 await 调用 async 下载方法
+                try await client.downloadItem(atPath: fullPath, to: tempURL)
+                await MainActor.run {
                     isLoading = false
                     isVideo = isVideo(name)
                     selectedMediaURL = tempURL
                 }
             } catch {
-                DispatchQueue.main.async { isLoading = false }
+                await MainActor.run { isLoading = false }
             }
         }
     }
@@ -197,6 +201,7 @@ struct SMBVideoPlayer: View {
 }
 
 // 让 URL 支持 Identifiable，用于全屏弹窗
-extension URL: Identifiable {
+// 修复警告：加 @retroactive
+extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
 }
