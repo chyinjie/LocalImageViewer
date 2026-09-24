@@ -65,24 +65,16 @@ struct SMBLoginView: View {
         }
         let credential = URLCredential(user: username, password: password, persistence: .forSession)
 
+        // 主线程初始化（SMB2Manager init 可能涉及网络栈，不能脱离主 actor）
+        guard let client = SMB2Manager(url: url, credential: credential) else {
+            isLoading = false
+            errorMessage = "无法创建 SMB 客户端，请检查地址格式"
+            return
+        }
+
+        connectedClient = client
+
         Task {
-            // 在后台线程初始化 SMB2Manager，避免阻塞主线程
-            let client: SMB2Manager? = await Task.detached(priority: .userInitiated) {
-                SMB2Manager(url: url, credential: credential)
-            }.value
-
-            guard let client else {
-                await MainActor.run {
-                    isLoading = false
-                    errorMessage = "无法创建 SMB 客户端，请检查地址格式"
-                }
-                return
-            }
-
-            await MainActor.run {
-                connectedClient = client
-            }
-
             do {
                 do {
                     _ = try await client.listShares()
@@ -103,7 +95,7 @@ struct SMBLoginView: View {
     }
 }
 
-// MARK: - 媒体项包装类型（替代 URL 的 Identifiable 扩展）
+// MARK: - 媒体项包装类型
 struct MediaItem: Identifiable {
     let id = UUID()
     let url: URL
@@ -117,7 +109,6 @@ struct SMBFileBrowserView: View {
     @State private var files: [Any] = []
     @State private var isLoading = true
     @State private var selectedMedia: MediaItem?
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Group {
